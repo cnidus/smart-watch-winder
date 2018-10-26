@@ -5,18 +5,17 @@
 //                                    By Doug Youd (doug@cnidus.net).                                       //
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Notes: 
-// * Designed for Heltec WiFi Kit 32 w/ OLED (ESP32 based)
-// * Heltec instructions: https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series#instructions
+// * Designed for Heltec WiFi Kit 32 w/ OLED (ESP32 based): https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series
+// * Heltec Pinout: https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series/blob/master/PinoutDiagram/WIFI%20Kit%2032.pdf
 // * Driver ULN2003 and engine reduced to 1:64
-// * Hardware based on 3d-printed winder: https://cults3d.com/en/3d-model/fashion/gyro-winder-watch-winder-remontoir-montre
+// * Winder hardware based on 3d-printed winder: https://cults3d.com/en/3d-model/fashion/gyro-winder-watch-winder-remontoir-montre
 // * Learnt how to drive OLED and get time from NTP: https://www.instructables.com/id/WiFi-Kit-32-NTP-Clock/
-// * AWS IOT w/ ESP32 https://exploreembedded.com/wiki/AWS_IOT_with_Arduino_ESP32 && https://github.com/Schm1tz1/aws-sdk-arduino-esp8266/blob/master/examples/SimpleExample/SimpleExample.ino
-//
+// * AWS IOT w/ ESP32 https://exploreembedded.com/wiki/AWS_IOT_with_Arduino_ESP32
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
-// Includes.
+// Includes
 //
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Winder components
@@ -29,9 +28,10 @@
 #include                              <U8g2lib.h>                           // see https://github.com/olikraus/u8g2/wiki/u8g2reference
 
 // ArduinoCam Camera
+// TODO: Figure this part out... doesnt look simple.
 
 // AWS IoT stuff
-// #include <AWS_IOT.h>     //ExploreEmbedded version
+#include <AWS_IOT.h>     //ExploreEmbedded version
 //#include <WiFiClient.h>
 //#include <HTTPClient.h> //ESP32 case
 //#include <AmazonIOTClient.h>
@@ -61,6 +61,8 @@ const int   NTP_PACKET_LENGTH =            48;                                  
 const int   TIME_ZONE =                    (-8);                                // offset from utc
 const int   UDP_PORT  =                    4000;                                // UDP listen port
 
+// AWS IoT stuff
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Variables.
@@ -68,25 +70,45 @@ const int   UDP_PORT  =                    4000;                                
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Winder components
 int       WinderLoopCounter;
-// The motor (wires 1 2 3 4) is connected to the outputs 8 9 10 11 of the Arduino (and on GND, + V)
+// The motor (wires 1 2 3 4) is connected to the outputs 8 9 10 11 of the Arduino (and on GND, + V)   //TODO: Change these pins, not stable on ESP32?
 Stepper   small_stepper(STEPS, 8, 10, 9, 11);                               // Counterclockwise by inverting 8 and 11 (if preferred)
-int       Steps2Take =                    0;                                // Number of rotation steps requested from the motor
 
 // Wifi, NTP & OLED
 char      chBuffer[128];                                                    // general purpose character buffer
 char      chPassword[] =                  "YourWifiPassword";               // your network password
 char      chSSID[] =                      "YourWifiSsid";                   // your network SSID
 bool      bTimeReceived =                 false;                            // time has not been received
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C       u8g2(U8G2_R0, 16, 15, 4);         // OLED graphics
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C       u8g2(U8G2_R0, 16, 15, 4);         // OLED graphics: Pins GPIO16 (OLED_RST), GPIO15 (OLED_SCL) & GPIO4 (OLED_SDA)
 int       nWifiStatus =                   WL_IDLE_STATUS;                   // wifi status
 WiFiUDP   Udp;
+
+// AWS IoT stuff
+AWS_IOT   iot;
+char      IOT_HOST_ADDRESS[]=             "AWS host address";
+char      IOT_CLIENT_ID[]=                "client id";
+char      IOT_TOPIC_NAME[]=               "your thing/topic name";
+int       tick=0,msgCount=0,msgReceived = 0;
+char      payload[512];
+char      rcvdPayload[512];
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 
+// Handlers
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+void mySubCallBackHandler (char *topicName, int payloadLen, char *payLoad) // For AWS IoT
+{
+    strncpy(rcvdPayload,payLoad,payloadLen);
+    rcvdPayload[payloadLen] = 0;
+    msgReceived = 1;
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 
 // Setup.
 //
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////  
-
 void setup() 
 {
   // Serial
@@ -156,6 +178,29 @@ void setup()
 //
 //  // Udp.
 //  Udp.begin(UDP_PORT);
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // AWS IoT 
+  if(iot.connect(IOT_HOST_ADDRESS,IOT_CLIENT_ID)== 0)
+  {
+      Serial.println("Connected to AWS");
+      delay(1000);
+
+      if(0==iot.subscribe(IOT_TOPIC_NAME,mySubCallBackHandler))
+      {
+          Serial.println("Subscribe Successfull");
+      }
+      else
+      {
+          Serial.println("Subscribe Failed, Check the Thing Name and Certificates");
+          while(1);
+      }
+  }
+  else
+  {
+      Serial.println("AWS connection failed, Check the HOST Address");
+      while(1);
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -166,7 +211,8 @@ void setup()
 
 void loop() 
 {
-  // Winder Loop code
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  //  Winder Loop code
   delay(100);  
   Serial.println("Winder running");  
   // Run the Winder
@@ -188,4 +234,29 @@ void loop()
     delay(30000); // 1 minute delay?
     WinderLoopCounter = 0;
   }
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // AWS IoT 
+  if(msgReceived == 1)
+  {
+      msgReceived = 0;
+      Serial.print("Received Message:");
+      Serial.println(rcvdPayload);
+  }
+  if(tick >= 5)   // publish to topic every 5seconds
+  {
+      tick=0;
+      sprintf(payload,"Hello from hornbill ESP32 : %d",msgCount++);
+      if(iot.publish(IOT_TOPIC_NAME,payload) == 0)
+      {        
+          Serial.print("Publish Message:");
+          Serial.println(payload);
+      }
+      else
+      {
+          Serial.println("Publish failed");
+      }
+  }  
+  //vTaskDelay(1000 / portTICK_RATE_MS);        //TODO: Integrate in with the winder loop, or split out to pthreads?
+  tick++;
 }
