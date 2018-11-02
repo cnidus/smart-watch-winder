@@ -1,1 +1,5 @@
 references/*
+*.pem
+*.key
+*.crt
+*_doug*
