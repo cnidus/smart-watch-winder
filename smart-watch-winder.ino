@@ -12,7 +12,13 @@
 // * Learnt how to drive OLED and get time from NTP: https://www.instructables.com/id/WiFi-Kit-32-NTP-Clock/
 // * AWS IOT w/ ESP32 https://exploreembedded.com/wiki/AWS_IOT_with_Arduino_ESP32
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+char      chPassword[] =                  "HerroPreeze";                    // your network password
+char      chSSID[] =                      "cninet";                         // your network SSID
 
+char      IOT_HOST_ADDRESS[]=             "a3unf9mgjckx6p-ats.iot.us-east-1.amazonaws.com";   // "AWS host address"
+char      IOT_CLIENT_ID[]=                "SmartWatchWinder42";                               // "client id"
+char      IOT_PUB_TOPIC_NAME[]=           "$aws/things/SmartWatchWinder42/WinderStats";       // "your thing/topic name"
+char      IOT_SUB_TOPIC_NAME[]=           "$aws/things/SmartWatchWinder42/CloudStats";        // "your thing/topic name"
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Includes
@@ -21,6 +27,7 @@
 // Winder components
 #include                              <Stepper.h>                           // Stepper motor driver
 #include                              <math.h>                              // Used for roundup etc
+#include                              <string>                              // Honestly.... no default string type.. fuuuu C. :P
 
 // Wifi, NTP & OLED
 #include                              <time.h>                              // for time calculations
@@ -44,7 +51,7 @@ const int   STEPS =                        100;                                 
 const int   TARGET_TPD =                   650;                                 // Select Turns per day for your watch. https://www.barringtonwatchwinders.com/us/turns-per-day/
 const bool  WIND_BOTH_DIRECTION =          true;                                // Enable / disable winding counter-clockwise during each cycle
 const int   WINDER_DELAY_ROTATIONS =       1000;                                // Delay between winding directions
-const int   WINDER_DELAY_CYCLE =           900000;                              // Delay between each cycle in ms. (900000 = 15min)
+const unsigned long   WINDER_DELAY_CYCLE =           900000;                              // Delay between each cycle in ms. (900000 = 15min)
 
 // For an engine of this type: http://tiptopboards.com/151-motor-not-not-relating-driving-5v-4-fils-driver-.html
 // 64 steps per revolution, 4 phases, 5.625 ° angle according to engine specifications
@@ -81,8 +88,8 @@ Stepper   winder(STEPS, 14, 12, 13, 32);                                    // C
 char      chBuffer[128];                                                    // general purpose character buffer
 unsigned long prevNTPUpdate =             NTP_SEND_DELAY;                   // will store last time winder was run
 unsigned long NTPLastSent =               0;                                // When the NTP packet was previously sent
-char      chPassword[] =                  "<YourWifiPasswordHere>";         // your network password
-char      chSSID[] =                      "<YourWifiSSIDHere>";             // your network SSID
+//char      chPassword[] =                  "<YourWifiPasswordHere>";         // your network password
+//char      chSSID[] =                      "<YourWifiSSIDHere>";             // your network SSID
 bool      bTimeReceived =                 false;                            // time has not been received
 bool      NTPPacketSent =                 false;                            // Havent yet got NTP time.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C       u8g2(U8G2_R0, 16, 15, 4);         // OLED graphics: Pins GPIO16 (OLED_RST), GPIO15 (OLED_SCL) & GPIO4 (OLED_SDA)
@@ -91,10 +98,10 @@ WiFiUDP   Udp;                                                              // U
 
 // AWS IoT stuff
 AWS_IOT   iot;
-char      IOT_HOST_ADDRESS[]=             "<YourAWSIoTHere>.iot.us-east-1.amazonaws.com";     // "AWS host address"
-char      IOT_CLIENT_ID[]=                "SmartWatchWinder";                                 // "client id"
-char      IOT_PUB_TOPIC_NAME[]=           "SmartWatchWinder/WinderStats";                     // "your thing/topic name"
-char      IOT_SUB_TOPIC_NAME[]=           "SmartWatchWinder/CloudStats";                      // "your thing/topic name"
+//char      IOT_HOST_ADDRESS[]=             "<YourAWSIoTHere>.iot.us-east-1.amazonaws.com";     // "AWS host address"
+//char      IOT_CLIENT_ID[]=                "SmartWatchWinder";                                 // "client id"
+//char      IOT_PUB_TOPIC_NAME[]=           "SmartWatchWinder/WinderStats";                     // "your thing/topic name"
+//char      IOT_SUB_TOPIC_NAME[]=           "SmartWatchWinder/CloudStats";                      // "your thing/topic name"
 int       msgCount=0,msgReceived = 0;                                                         // Counts of MQTT messages sent/received
 char      payload[512];                                                                       // MQTT publish payload
 char      rcvdPayload[512];                                                                   // MQTT subscribe payload
@@ -359,13 +366,10 @@ void loop()
       //Calculate number of steps per cycle based on params.
       int CyclesPerDay = (86400000 / WINDER_DELAY_CYCLE);
       WinderTurnsPerCycle = ceil(TARGET_TPD / CyclesPerDay);
-      Serial.println(CyclesPerDay);
-      Serial.println(WinderTurnsPerCycle);
     
       if (WinderLoopCounter < WinderTurnsPerCycle)
       {
           sprintf(WinderStatus, "Winding");
-          Serial.println(WinderLoopCounter);
           if (WIND_BOTH_DIRECTION)
           {
               if (WinderLoopCounter < (WinderTurnsPerCycle /2))                                  // Wind clockwise for first half of WinderTurnsPerCycle
@@ -373,6 +377,7 @@ void loop()
                   winder.step(STEPS_PER_REVOLUTION);                                             // Clockwise rotation
                   Serial.println("Completed Clockwise winding");
                   WinderLoopCounter++;                                                           // Add 1 to the Counter  
+                  WinderTotalTurns++;;
               }
               else
               {
@@ -380,6 +385,7 @@ void loop()
                       winder.step(-STEPS_PER_REVOLUTION);                                        // Counter-Clockwise Rotation
                       Serial.println("Completed Counter-Clockwise winding");
                       WinderLoopCounter++;                                                       // Add 1 to the Counter 
+                      WinderTotalTurns++;;
               }
           }
           else
@@ -387,6 +393,7 @@ void loop()
               winder.step(STEPS_PER_REVOLUTION);                                                 // Clockwise rotation
               Serial.println("Completed Clockwise winding");
               WinderLoopCounter++;                                                               // Add 1 to the Counter  
+              WinderTotalTurns++;;
           }
       }
       else
@@ -394,7 +401,7 @@ void loop()
           Serial.println("Done winding for a while. Sending stats to IoT....");
           sprintf(WinderStatus, "Idle");
           IoTWinderCount += WinderLoopCounter;                                                   // Keep a count of turns to publish to IoT
-          WinderTotalTurns += WinderLoopCounter;                                                 // Keep a total count since last powered on. //TODO: Make this a daily count
+          //WinderTotalTurns += WinderLoopCounter;                                                 // Keep a total count since last powered on. //TODO: Make this a daily count
           WinderLoopCounter = 0;
           prevCycle = currentMillis;                                                             // save the last time you started winding
       }
@@ -434,7 +441,8 @@ void loop()
       sprintf(IoTStatus, "msg rcvd");
   }
 
-  // Update OLED.
+  /////////// Update OLED ///////////////////////////
+  //
   u8g2.clearBuffer();                                                 // Clean the display buffer.
   if(bTimeReceived)
   {
@@ -447,16 +455,9 @@ void loop()
     
       // Display the date.
 //      strftime(chBuffer, sizeof(chBuffer), "%a, %d %b %Y",  tmPointer);
-//      u8g2.setFont(u8g2_font_6x10_tr);
-//      u8g2.drawStr(64 - (u8g2.getStrWidth(chBuffer) / 2), 0, chBuffer);
-  
+
       // Display the time.
       strftime(chBuffer, sizeof(chBuffer), "%I:%M:%S",  tmPointer);
-//      u8g2.setFont(u8g2_font_fur20_tn);
-//      u8g2.drawStr(10, 63 - FONT_TWO_HEIGHT, chBuffer);
-//
-//      u8g2.sendBuffer();                                                    // Now send the display buffer to the OLED.
-//      delay(3000);
   }
   else
   {
@@ -469,10 +470,29 @@ void loop()
   u8g2.drawStr(0, FONT_ONE_HEIGHT * 3, chBuffer);
   sprintf(chBuffer, "IoT: %s", IoTStatus);                              // Display IoT Status
   u8g2.drawStr(0, FONT_ONE_HEIGHT * 4, chBuffer);
-  u8g2.sendBuffer();                                                    // Now send the display buffer to the OLED.
+  
+  if (WinderLoopCounter)
+  {
+      sprintf(chBuffer, "Cycle: ");                                                                             // Display cycle progress bar
+      u8g2.drawStr(0, FONT_ONE_HEIGHT * 5, chBuffer);
+      float temp = WinderLoopCounter;                                                                         
+      int BarWidth = ceil((128- u8g2.getStrWidth(chBuffer)) * (temp / WinderTurnsPerCycle));                    // Calculate box size based on delay timer.
+      Serial.println(BarWidth);
+      u8g2.drawBox(u8g2.getStrWidth(chBuffer), (FONT_ONE_HEIGHT * 5) + 1, (BarWidth), (FONT_ONE_HEIGHT -1));    // Draw a progress bar      
+  }
+  else
+  {
+      sprintf(chBuffer, "Idle: ");                                                                              // Display idle progress bar
+      u8g2.drawStr(0, FONT_ONE_HEIGHT * 5, chBuffer);
+      float temp = (currentMillis - prevCycle);
+      int BarWidth = ceil((128- u8g2.getStrWidth(chBuffer)) * (temp / WINDER_DELAY_CYCLE));                     // Calculate box size based on delay timer.
+      Serial.println(BarWidth);
+      u8g2.drawBox(u8g2.getStrWidth(chBuffer), (FONT_ONE_HEIGHT * 5) + 1, (BarWidth), (FONT_ONE_HEIGHT -1));    // Draw a progress bar      
+  }
+  u8g2.sendBuffer();                                                                                            // Now send the display buffer to the OLED.
 
   
   // All done! Fire ze missiles!... but I am le tired.... ok, first have a nap. THEN FIRE ZE MISSILES!
-  Serial.print(".");    
+//  Serial.print(".");    
 
 }
