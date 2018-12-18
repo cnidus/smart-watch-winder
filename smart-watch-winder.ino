@@ -4,7 +4,7 @@
 //                                                                                                          //
 //                                    By Doug Youd (doug@cnidus.net).                                       //
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Notes: 
+// Notes:
 // * Designed for Heltec WiFi Kit 32 w/ OLED (ESP32 based): https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series
 // * Heltec Pinout: https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series/blob/master/PinoutDiagram/WIFI%20Kit%2032.pdf
 // * Driver ULN2003 and engine reduced to 1:64
@@ -12,13 +12,7 @@
 // * Learnt how to drive OLED and get time from NTP: https://www.instructables.com/id/WiFi-Kit-32-NTP-Clock/
 // * AWS IOT w/ ESP32 https://exploreembedded.com/wiki/AWS_IOT_with_Arduino_ESP32
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
-char      chPassword[] =                  "HerroPreeze";                    // your network password
-char      chSSID[] =                      "cninet";                         // your network SSID
 
-char      IOT_HOST_ADDRESS[]=             "a3unf9mgjckx6p-ats.iot.us-east-1.amazonaws.com";   // "AWS host address"
-char      IOT_CLIENT_ID[]=                "SmartWatchWinder42";                               // "client id"
-char      IOT_PUB_TOPIC_NAME[]=           "$aws/things/SmartWatchWinder42/WinderStats";       // "your thing/topic name"
-char      IOT_SUB_TOPIC_NAME[]=           "$aws/things/SmartWatchWinder42/CloudStats";        // "your thing/topic name"
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Includes
@@ -35,11 +29,16 @@ char      IOT_SUB_TOPIC_NAME[]=           "$aws/things/SmartWatchWinder42/CloudS
 #include                              <WiFiUdp.h>                           // for udp via wifi
 #include                              <U8g2lib.h>                           // see https://github.com/olikraus/u8g2/wiki/u8g2reference
 
-// ArduinoCam Camera
+// ArduinoCam OV2640 Camera
 // TODO: Figure this part out... doesnt look simple.
+#include                              <esp_camera.h>                        // Thanks expressif! https://github.com/espressif/esp32-camera
+#include                              <esp_http_server.h>
+#include                              <esp_timer.h>
+#include                              <esp_err.h>                           // May need to do as a fully defined path?
+
 
 // AWS IoT stuff
-#include <AWS_IOT.h>     //ExploreEmbedded version
+#include                              <AWS_IOT.h>     //ExploreEmbedded version
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -70,6 +69,26 @@ const int   NTP_PACKET_LENGTH =            48;                                  
 const int   TIME_ZONE =                    (-8);                                // offset from utc
 const int   UDP_PORT  =                    4000;                                // UDP listen port (for NTP)
 
+// ArduinoCam OV2640 Camera
+#define CAM_PIN_PWDN    -1 //power down is not used
+#define CAM_PIN_RESET   2 //software reset will be performed
+#define CAM_PIN_XCLK    27
+#define CAM_PIN_SIOD    25
+#define CAM_PIN_SIOC    23
+
+#define CAM_PIN_D7      19
+#define CAM_PIN_D6      36
+#define CAM_PIN_D5      18
+#define CAM_PIN_D4      39
+#define CAM_PIN_D3       5
+#define CAM_PIN_D2      34
+#define CAM_PIN_D1      17
+#define CAM_PIN_D0      35
+#define CAM_PIN_VSYNC   22
+#define CAM_PIN_HREF    26
+#define CAM_PIN_PCLK    21
+
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Variables.
@@ -88,8 +107,8 @@ Stepper   winder(STEPS, 14, 12, 13, 32);                                    // C
 char      chBuffer[128];                                                    // general purpose character buffer
 unsigned long prevNTPUpdate =             NTP_SEND_DELAY;                   // will store last time winder was run
 unsigned long NTPLastSent =               0;                                // When the NTP packet was previously sent
-//char      chPassword[] =                  "<YourWifiPasswordHere>";         // your network password
-//char      chSSID[] =                      "<YourWifiSSIDHere>";             // your network SSID
+char      chPassword[] =                  "<YourWifiPasswordHere>";         // your network password
+char      chSSID[] =                      "<YourWifiSSIDHere>";             // your network SSID
 bool      bTimeReceived =                 false;                            // time has not been received
 bool      NTPPacketSent =                 false;                            // Havent yet got NTP time.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C       u8g2(U8G2_R0, 16, 15, 4);         // OLED graphics: Pins GPIO16 (OLED_RST), GPIO15 (OLED_SCL) & GPIO4 (OLED_SDA)
@@ -98,10 +117,10 @@ WiFiUDP   Udp;                                                              // U
 
 // AWS IoT stuff
 AWS_IOT   iot;
-//char      IOT_HOST_ADDRESS[]=             "<YourAWSIoTHere>.iot.us-east-1.amazonaws.com";     // "AWS host address"
-//char      IOT_CLIENT_ID[]=                "SmartWatchWinder";                                 // "client id"
-//char      IOT_PUB_TOPIC_NAME[]=           "SmartWatchWinder/WinderStats";                     // "your thing/topic name"
-//char      IOT_SUB_TOPIC_NAME[]=           "SmartWatchWinder/CloudStats";                      // "your thing/topic name"
+char      IOT_HOST_ADDRESS[]=             "<YourAWSIoTHere>.iot.us-east-1.amazonaws.com";     // "AWS host address"
+char      IOT_CLIENT_ID[]=                "SmartWatchWinder";                                 // "client id"
+char      IOT_PUB_TOPIC_NAME[]=           "SmartWatchWinder/WinderStats";                     // "your thing/topic name"
+char      IOT_SUB_TOPIC_NAME[]=           "SmartWatchWinder/CloudStats";                      // "your thing/topic name"
 int       msgCount=0,msgReceived = 0;                                                         // Counts of MQTT messages sent/received
 char      payload[512];                                                                       // MQTT publish payload
 char      rcvdPayload[512];                                                                   // MQTT subscribe payload
@@ -110,10 +129,10 @@ char      IoTStatus[]=                    "Not Connected";                      
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// 
+//
 // Handlers
 //
-////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void mySubCallBackHandler (char *topicName, int payloadLen, char *payLoad) // For AWS IoT
 {
     strncpy(rcvdPayload,payLoad,payloadLen);
@@ -129,7 +148,7 @@ void checkIotStatus ()
         Serial.println("Connected to AWS");
         sprintf(IoTStatus, "Connected");
         delay(1000);
-  
+
         if(0==iot.subscribe(IOT_SUB_TOPIC_NAME,mySubCallBackHandler))
         {
             Serial.println("Subscribe Successfull");
@@ -171,9 +190,9 @@ void updateTime()
       //    ll  (leap indicator) = 0
       //    vvv (version number) = 3
       //    mmm (mode)           = 3
-      
+
       chNtpPacket[0]  = 0b00011011;
-  
+
       // Send the ntp packet.
       IPAddress ipNtpServer(129, 6, 15, 29);              // https://tf.nist.gov/tf-cgi/servers.cgi
       Udp.beginPacket(ipNtpServer, 123);
@@ -196,7 +215,7 @@ void updateTime()
       {
           // Server responded, read the packet.
           Udp.read(chNtpPacket, NTP_PACKET_LENGTH);
-    
+
           // Obtain the time from the packet, convert to Unix time, and adjust for the time zone.
           struct  timeval tvTimeValue = {0, 0};
           tvTimeValue.tv_sec = ((unsigned long)chNtpPacket[40] << 24) +       // bits 24 through 31 of ntp time
@@ -206,11 +225,11 @@ void updateTime()
                                (((70UL * 365UL) + 17UL) * 86400UL) +          // ntp to unix conversion
                                (TIME_ZONE * 3600UL) +                         // time zone adjustment
                                (5);                                           // transport delay fudge factor
-          
+
           settimeofday(& tvTimeValue, NULL);                                  // Set the ESP32 rtc.
           bTimeReceived = true;                                               // Time has been received.
           NTPPacketSent = false;
-          
+
           // Output date and time to serial.
           struct tm * tmPointer = localtime(& tvTimeValue.tv_sec);
           strftime (chBuffer, sizeof(chBuffer), "%a, %d %b %Y %H:%M:%S",  tmPointer);
@@ -218,7 +237,7 @@ void updateTime()
           prevNTPUpdate = currentMillis;
           Serial.println();
           Serial.print("NTP clock: response received, time written to ESP32 rtc: ");
-          Serial.println(chBuffer); 
+          Serial.println(chBuffer);
       }
       else
       {
@@ -230,12 +249,75 @@ void updateTime()
 }
 
 
+// ArduinoCam OV2640 Camera
+static camera_config_t camera_config = {
+    .pin_reset = CAM_PIN_RESET,
+    .pin_xclk = CAM_PIN_XCLK,
+    .pin_sscb_sda = CAM_PIN_SIOD,
+    .pin_sscb_scl = CAM_PIN_SIOC,
+
+    .pin_d7 = CAM_PIN_D7,
+    .pin_d6 = CAM_PIN_D6,
+    .pin_d5 = CAM_PIN_D5,
+    .pin_d4 = CAM_PIN_D4,
+    .pin_d3 = CAM_PIN_D3,
+    .pin_d2 = CAM_PIN_D2,
+    .pin_d1 = CAM_PIN_D1,
+    .pin_d0 = CAM_PIN_D0,
+    .pin_vsync = CAM_PIN_VSYNC,
+    .pin_href = CAM_PIN_HREF,
+    .pin_pclk = CAM_PIN_PCLK,
+
+    //XCLK 20MHz or 10MHz
+    .xclk_freq_hz = 20000000,
+    .ledc_timer = LEDC_TIMER_0,
+    .ledc_channel = LEDC_CHANNEL_0,
+
+    .pixel_format = PIXFORMAT_JPEG,//YUV422,GRAYSCALE,RGB565,JPEG
+    .frame_size = FRAMESIZE_UXGA,//QQVGA-UXGA Do not use sizes above QVGA when not JPEG
+
+    .jpeg_quality = 12, //0-63 lower number means higher quality
+    .fb_count = 1 //if more than one, i2s runs in continuous mode. Use only with JPEG
+};
+
+esp_err_t camera_init(){
+    //power up the camera if PWDN pin is defined
+    if(CAM_PIN_PWDN != -1){
+        pinMode(CAM_PIN_PWDN, OUTPUT);
+        digitalWrite(CAM_PIN_PWDN, LOW);
+    }
+
+    //initialize the camera
+    esp_err_t err = esp_camera_init(&camera_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Camera Init Failed");
+        return err;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t camera_capture(){
+    //acquire a frame
+    camera_fb_t * fb = esp_camera_fb_get();
+    if (!fb) {
+        ESP_LOGE(TAG, "Camera Capture Failed");
+        return ESP_FAIL;
+    }
+    //replace this with your own function
+    process_image(fb->width, fb->height, fb->format, fb->buf, fb->len);
+
+    //return the frame buffer back to the driver for reuse
+    esp_camera_fb_return(fb);
+    return ESP_OK;
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// 
+//
 // Setup.
 //
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////  
-void setup() 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void setup()
 {
   // Serial
   Serial.begin(115200);
@@ -245,21 +327,21 @@ void setup()
   }
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // Winder Setup
-  Serial.println("Initializing up smart watch winder"); 
+  Serial.println("Initializing up smart watch winder");
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   // Wifi, NTP & OLED
 
-  // OLED graphics. 
+  // OLED graphics.
   u8g2.begin();
   u8g2.setFont(u8g2_font_6x10_tr);
   u8g2.setFontRefHeightExtendedText();
   u8g2.setDrawColor(1);
   u8g2.setFontPosTop();
   u8g2.setFontDirection(0);
- 
+
   // Wifi.
-    // Display title 
+    // Display title
     u8g2.clearBuffer();
     sprintf(chBuffer, "%s", "Connecting to:");
     u8g2.drawStr(64 - (u8g2.getStrWidth(chBuffer) / 2), 0, chBuffer);
@@ -291,7 +373,7 @@ void setup()
   sprintf(chBuffer, "%s", IOT_HOST_ADDRESS);
   u8g2.drawStr(64 - (u8g2.getStrWidth(chBuffer) / 2), 31 - (FONT_ONE_HEIGHT / 2), chBuffer);
   u8g2.sendBuffer();
-  
+
   if(iot.connect(IOT_HOST_ADDRESS,IOT_CLIENT_ID)== 0)
   {
       Serial.println("Connected to AWS");
@@ -329,7 +411,7 @@ void setup()
   sprintf(chBuffer, "SSID: %s", chSSID);                              // Display the ssid of the wifi router.
   u8g2.drawStr(0, FONT_ONE_HEIGHT * 3, chBuffer);
   sprintf(chBuffer, "IoT: %s", IoTStatus);                            // Display IoT Connection status
-  u8g2.drawStr(0, FONT_ONE_HEIGHT * 4, chBuffer);  
+  u8g2.drawStr(0, FONT_ONE_HEIGHT * 4, chBuffer);
   u8g2.sendBuffer();                                                  // Now send the display buffer to the OLED.
 }
 
@@ -339,9 +421,9 @@ void setup()
 //
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void loop() 
+void loop()
 {
-  unsigned long currentMillis = millis();                      // Time right now                     
+  unsigned long currentMillis = millis();                      // Time right now
 
   delay(100);
 
@@ -353,20 +435,20 @@ void loop()
           prevNTPUpdate == currentMillis;
       }
   }
-  
+
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
   //  Winder Loop code
-  
-  if (currentMillis - prevCycle >= WINDER_DELAY_CYCLE) 
-  {       
+
+  if (currentMillis - prevCycle >= WINDER_DELAY_CYCLE)
+  {
       Serial.println("Winder running");
       winder.setSpeed(WINDER_SPEED);                                                             // Run the Winder
 
       //Calculate number of steps per cycle based on params.
       int CyclesPerDay = (86400000 / WINDER_DELAY_CYCLE);
       WinderTurnsPerCycle = ceil(TARGET_TPD / CyclesPerDay);
-    
+
       if (WinderLoopCounter < WinderTurnsPerCycle)
       {
           sprintf(WinderStatus, "Winding");
@@ -376,7 +458,7 @@ void loop()
               {
                   winder.step(STEPS_PER_REVOLUTION);                                             // Clockwise rotation
                   Serial.println("Completed Clockwise winding");
-                  WinderLoopCounter++;                                                           // Add 1 to the Counter  
+                  WinderLoopCounter++;                                                           // Add 1 to the Counter
                   WinderTotalTurns++;;
               }
               else
@@ -384,7 +466,7 @@ void loop()
                       delay(WINDER_DELAY_ROTATIONS);
                       winder.step(-STEPS_PER_REVOLUTION);                                        // Counter-Clockwise Rotation
                       Serial.println("Completed Counter-Clockwise winding");
-                      WinderLoopCounter++;                                                       // Add 1 to the Counter 
+                      WinderLoopCounter++;                                                       // Add 1 to the Counter
                       WinderTotalTurns++;;
               }
           }
@@ -392,7 +474,7 @@ void loop()
           {
               winder.step(STEPS_PER_REVOLUTION);                                                 // Clockwise rotation
               Serial.println("Completed Clockwise winding");
-              WinderLoopCounter++;                                                               // Add 1 to the Counter  
+              WinderLoopCounter++;                                                               // Add 1 to the Counter
               WinderTotalTurns++;;
           }
       }
@@ -408,8 +490,8 @@ void loop()
   }
 
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // AWS IoT 
-  
+  // AWS IoT
+
   // publish to topic when the cycle completes, or if there are outstanding winds that have not been reported.
   if (IoTWinderCount > 0)
   {
@@ -417,7 +499,7 @@ void loop()
       sprintf(payload,"Rotations: %d", IoTWinderCount);
       msgCount++;
       if(iot.publish(IOT_PUB_TOPIC_NAME,payload) == 0)
-      {        
+      {
           Serial.print("Publish Message:");
           Serial.println(payload);
           sprintf(IoTStatus, "Pub Success");
@@ -430,7 +512,7 @@ void loop()
           Serial.println(payload);
       }
   }
-  
+
   //TODO: Parse and display the received message. Thinking it will contain WatchId (fingerprint of the watchface), observed skew, accuracy over period etc.
   // For now, just print it to serial
   if(msgReceived == 1)
@@ -449,10 +531,10 @@ void loop()
       // Ntp time has been received, ajusted and written to the ESP32 rtc, so obtain the time from the ESP32 rtc.
       struct  timeval tvTimeValue;
       gettimeofday(& tvTimeValue, NULL);
-  
+
       // Obtain a pointer to local time.
       struct tm * tmPointer = localtime(& tvTimeValue.tv_sec);
-    
+
       // Display the date.
 //      strftime(chBuffer, sizeof(chBuffer), "%a, %d %b %Y",  tmPointer);
 
@@ -465,20 +547,20 @@ void loop()
   }
   u8g2.drawStr(64 - (u8g2.getStrWidth(chBuffer) / 2), 0, chBuffer);     // Display the title.
   sprintf(chBuffer, "Winder: %s", WinderStatus);                        // Display Winder status
-  u8g2.drawStr(0, FONT_ONE_HEIGHT * 2, chBuffer);      
+  u8g2.drawStr(0, FONT_ONE_HEIGHT * 2, chBuffer);
   sprintf(chBuffer, "Turns: %d", WinderTotalTurns);                     // Display Winder count
   u8g2.drawStr(0, FONT_ONE_HEIGHT * 3, chBuffer);
   sprintf(chBuffer, "IoT: %s", IoTStatus);                              // Display IoT Status
   u8g2.drawStr(0, FONT_ONE_HEIGHT * 4, chBuffer);
-  
+
   if (WinderLoopCounter)
   {
       sprintf(chBuffer, "Cycle: ");                                                                             // Display cycle progress bar
       u8g2.drawStr(0, FONT_ONE_HEIGHT * 5, chBuffer);
-      float temp = WinderLoopCounter;                                                                         
+      float temp = WinderLoopCounter;
       int BarWidth = ceil((128- u8g2.getStrWidth(chBuffer)) * (temp / WinderTurnsPerCycle));                    // Calculate box size based on delay timer.
       Serial.println(BarWidth);
-      u8g2.drawBox(u8g2.getStrWidth(chBuffer), (FONT_ONE_HEIGHT * 5) + 1, (BarWidth), (FONT_ONE_HEIGHT -1));    // Draw a progress bar      
+      u8g2.drawBox(u8g2.getStrWidth(chBuffer), (FONT_ONE_HEIGHT * 5) + 1, (BarWidth), (FONT_ONE_HEIGHT -1));    // Draw a progress bar
   }
   else
   {
@@ -487,12 +569,12 @@ void loop()
       float temp = (currentMillis - prevCycle);
       int BarWidth = ceil((128- u8g2.getStrWidth(chBuffer)) * (temp / WINDER_DELAY_CYCLE));                     // Calculate box size based on delay timer.
       Serial.println(BarWidth);
-      u8g2.drawBox(u8g2.getStrWidth(chBuffer), (FONT_ONE_HEIGHT * 5) + 1, (BarWidth), (FONT_ONE_HEIGHT -1));    // Draw a progress bar      
+      u8g2.drawBox(u8g2.getStrWidth(chBuffer), (FONT_ONE_HEIGHT * 5) + 1, (BarWidth), (FONT_ONE_HEIGHT -1));    // Draw a progress bar
   }
   u8g2.sendBuffer();                                                                                            // Now send the display buffer to the OLED.
 
-  
+
   // All done! Fire ze missiles!... but I am le tired.... ok, first have a nap. THEN FIRE ZE MISSILES!
-//  Serial.print(".");    
+//  Serial.print(".");
 
 }
